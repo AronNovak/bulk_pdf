@@ -21,8 +21,8 @@ function bulk_pdf_menu() {
 }
 
 /**
- *  * Implementation of hook_link().
- *   */
+ * Implementation of hook_theme().
+ */
 function bulk_pdf_theme() {
   return array(
     'bulk_pdf_page' => array(
@@ -75,6 +75,12 @@ function bulk_pdf_action_info() {
   );
 }
 
+/**
+ * Action callback
+ * @see bulk_pdf_action_info().
+ * Stores the node IDs and hijack the page after the operation is finished.
+ * VBO is just the selection tool.
+ */
 function bulk_pdf_action($object, $context) {
   static $msg = FALSE;
   $_SESSION['bulk_pdf']['nids'][] = $object->nid;
@@ -86,8 +92,8 @@ function bulk_pdf_action($object, $context) {
 }
 
 /**
- *  * Settings form for the action, @see bulk_pdf_action_info().
- *   */
+ * Settings form for the action, @see bulk_pdf_action_info().
+ */
 function bulk_pdf_action_form($context) {
   $form = array();
   $form['model'] = array(
@@ -99,6 +105,9 @@ function bulk_pdf_action_form($context) {
   return $form;
 }
 
+/**
+ * Validates and saves the action settings
+ */
 function bulk_pdf_action_validate($form, &$form_state) {
   preg_match('/^(?:\s*|(.*) )?\[\s*nid\s*:\s*(\d+)\s*\]$/', $form_state['values']['model'], $matches);
   if (!empty($matches)) {
@@ -111,6 +120,10 @@ function bulk_pdf_action_validate($form, &$form_state) {
   }
 }
 
+/**
+ * Launches our own Batch API stuff. We need to use a separate one
+ * to be able to generate multiple pages (entries) into one PDF file
+ */
 function bulk_pdf_generate() {
   $batch_size = 100;
   $batch = array(
