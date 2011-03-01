@@ -1,0 +1,170 @@
+<?php
+
+/**
+ * Implementation of hook_menu().
+ */
+function bulk_pdf_menu() {
+  $items = array();
+  $items['bulk-pdf/autocomplete'] = array(
+    'title' => 'Bulk PDF autocomplete',
+    'page callback' => 'bulk_pdf_autocomplete',
+    'access arguments' => array('generating bulk PDFs'),
+    'type' => MENU_CALLBACK
+  );
+  $items['bulk-pdf/generate'] = array(
+    'title' => 'Generatig PDFs',
+    'page callback' => 'bulk_pdf_generate',
+    'access arguments' => array('generating bulk PDFs'),
+    'type' => MENU_CALLBACK
+  );
+  return $items;
+}
+
+/**
+ *  * Implementation of hook_link().
+ *   */
+function bulk_pdf_theme() {
+  return array(
+    'bulk_pdf_page' => array(
+      'arguments' => array('content' => NULL),
+      'template' => 'bulk_pdf_page',
+    ),
+  );
+}
+
+/**
+ * Own autocomplete function for fetching titles only from one, selected content-type.
+ * The content-type is specified in a non-user configurable variable.
+ */
+function bulk_pdf_autocomplete($string = '') {
+  $result = db_query("SELECT n.nid, n.title AS node_title FROM {node} n WHERE type='%s' AND title LIKE '%%%s%%'", variable_get('bulk_pdf_type', 'story'), $string);
+  $references = array();
+  while ($node = db_fetch_object($result)) {
+    $references[$node->nid] = array(
+      'title' => $node->node_title,
+      'rendered' => check_plain($node->node_title),
+    );
+  }
+  $matches = array();
+  foreach ($references as $id => $row) {
+    // Add a class wrapper for a few required CSS overrides.
+    $matches[$row['title'] ." [nid:$id]"] = '<div class="reference-autocomplete">'. $row['rendered'] . '</div>';
+  }
+  drupal_json($matches);
+}
+
+
+/**
+ * Implementation of hook_perm().
+ */
+function bulk_pdf_perm() {
+  return array('generating bulk PDFs');
+}
+
+/**
+ * Implementation of hook_action_info()
+ */
+function bulk_pdf_action_info() {
+  return array(
+    'bulk_pdf_action' => array(
+      'type' => 'system',
+      'description' => t('Generate bulk PDF'),
+      'configurable' => TRUE,
+      'permissions' => array('generating bulk PDF, applying tokens from the selected nodes to the model node'),
+    ),
+  );
+}
+
+function bulk_pdf_action($object, $context) {
+  static $msg = FALSE;
+  $_SESSION['bulk_pdf']['nids'][] = $object->nid;
+  if ($msg == FALSE) {
+    $msg = TRUE;
+    // No better way to hijack page after views_bulk_operations finished, no _after hook or something like that to be able to use drupal_goto, also $context does not store information about the last object, object counter
+    drupal_set_message('<script type="text/javascript">window.location="'. url('bulk-pdf/generate') . '";</script>');
+  }
+}
+
+/**
+ *  * Settings form for the action, @see bulk_pdf_action_info().
+ *   */
+function bulk_pdf_action_form($context) {
+  $form = array();
+  $form['model'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Choose model'),
+    '#autocomplete_path' => 'bulk-pdf/autocomplete',
+    '#required' => TRUE,
+  );
+  return $form;
+}
+
+function bulk_pdf_action_validate($form, &$form_state) {
+  preg_match('/^(?:\s*|(.*) )?\[\s*nid\s*:\s*(\d+)\s*\]$/', $form_state['values']['model'], $matches);
+  if (!empty($matches)) {
+    list(, $title, $nid) = $matches;
+    if (!empty($title) && ($n = node_load($nid)) && trim($title) != trim($n->title)) {
+      form_set_error('model', t('Invalid model choice'));
+    }
+    $_SESSION['bulk_pdf']['model'] = $nid;
+    $_SESSION['bulk_pdf']['back'] = $_GET['q'];
+  }
+}
+
+function bulk_pdf_generate() {
+  $batch_size = 100;
+  $batch = array(
+    'title' => t('Generating PDFs'),
+    'init_message' => t('PDFs are being generated.'),
+    'progress_message' => t('Processed @current out of @total.'),
+    'error_message' => t('We encountered an error. Please try again.'),
+  );
+  $idx = 0;
+  $nids = array();
+  foreach ($_SESSION['bulk_pdf']['nids'] as $nid) {
+    $nids[] = $nid;
+    $counter++;
+    if (count($nids) > ($batch_size - 1)) {
+      $batch['operations'][$idx++] = array('bulk_pdf_generate_process', array($nids));
+      $nids = array();
+    }
+  }
+  if (!empty($nids)) {
+    $batch['operations'][$idx++] = array('bulk_pdf_generate_process', array($nids));
+  }
+  unset($_SESSION['bulk_pdf']['nids']);
+  if (!empty($batch['operations'])) {
+    batch_set($batch);
+    batch_process();
+  }
+  elseif (!empty($_SESSION['bulk_pdf']['files'])) {
+    drupal_set_title(t('Download the PDFs'));
+    $output = theme('item_list', $_SESSION['bulk_pdf']['files']) . l(t('Back to the first step'), $_SESSION['bulk_pdf']['back']);
+    unset($_SESSION['bulk_pdf']);
+    return $output;
+  }
+}
+
+/**
+ * Generates the PDF file for the set of contacts (nids) using the dompdf module
+ * It stores the filename in the session variable for showing it later
+ */
+function bulk_pdf_generate_process($nids, &$context) {
+  ini_set('max_execution_time', 300);
+  $node = node_load($_SESSION['bulk_pdf']['model']);
+  $objects = array();
+  $output = '';
+  foreach ($nids as $nid) {
+    $data = node_load($nid);
+    $output .= _filter_autop(token_replace_multiple($node->body, array('node' => $data)));
+  }
+  $filename = file_directory_path() . '/bulk-pdf-' . md5(serialize($objects)) . '-' . $node->nid . '.pdf';
+  $pdf = dompdf_stream_pdf(theme('bulk_pdf_page', $output));
+  file_put_contents($filename, $pdf);
+  $context['finished'] = TRUE;
+  if (!is_array($_SESSION['bulk_pdf']['files'])) {
+    $_SESSION['bulk_pdf']['files'] = array();
+  }
+  $_SESSION['bulk_pdf']['files'][] = l($filename, $filename, array('absolute' => TRUE));
+}
+

@@ -1,0 +1,6 @@
+name=Bulk PDF Generator
+core=6.x
+description=Generating bulk PDFs using VBO, Token and dompdf
+dependencies[] = views_bulk_operations
+dependencies[] = token
+dependencies[] = dompdf
