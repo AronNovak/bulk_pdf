@@ -1,4 +1,9 @@
 <?php
+/**
+ * @file
+ *   Provides the ability of mass-generating PDF files using Tokens and template files.
+ *   Gluing dompdf, token and views_bulk_operations together
+ */
 
 /**
  * Implementation of hook_menu().
@@ -41,7 +46,8 @@ function bulk_pdf_perm() {
 
 /**
  * Implementation of hook_form_alter().
- * Choosing model content-types.
+ * Choosing model content-types on content-type edit pages.
+ * Showing all tokens at model node edit pages.
  */
 function bulk_pdf_form_alter(&$form, $form_state, $form_id) {
   if ($form_id == 'node_type_form' && isset($form['identity']['type'])) {
@@ -67,7 +73,7 @@ function bulk_pdf_form_alter(&$form, $form_state, $form_id) {
       '#collapsed' => TRUE,
     );
     $form['bulk_pdf']['tokens'] = array(
-      '#value' => theme('token_tree', 'all', TRUE, FALSE),
+      '#value' => theme('token_tree', 'all', TRUE, FALSE), // A bit misleading, not all tokens can be used in fact, some miss the context
     );
   }
 }
@@ -178,7 +184,7 @@ function bulk_pdf_action_submit($form, &$form_state) {
  * to be able to generate multiple pages (entries) into one PDF file
  */
 function bulk_pdf_generate() {
-  $batch_size = 100;
+  $batch_size = variable_get('bulk_pdf_batch_size', 100);
   $batch = array(
     'title' => t('Generating PDFs'),
     'init_message' => t('PDFs are being generated.'),
@@ -214,11 +220,12 @@ function bulk_pdf_generate() {
 }
 
 /**
- * Generates the PDF file for the set of contacts (nids) using the dompdf module
+ * Generates the PDF file for the set of data nodes using the dompdf module
  * It stores the filename in the session variable for showing it later
  */
 function bulk_pdf_generate_process($nids, &$context) {
-  ini_set('max_execution_time', 300);
+  // PDF generation using dompdf is time- and memory-consuming process.
+  set_time_limit(300); // Using this to try to increase the max execution time. This function never actually lowers the value.
   $node = node_load($_SESSION['bulk_pdf']['model']);
   $objects = array();
   $output = '';
