@@ -33,28 +33,6 @@ function bulk_pdf_theme() {
 }
 
 /**
- * Own autocomplete function for fetching titles only from one, selected content-type.
- * The content-type is specified in a non-user configurable variable.
- */
-function bulk_pdf_autocomplete($string = '') {
-  $result = db_query("SELECT n.nid, n.title AS node_title FROM {node} n WHERE type='%s' AND title LIKE '%%%s%%'", variable_get('bulk_pdf_type', 'story'), $string);
-  $references = array();
-  while ($node = db_fetch_object($result)) {
-    $references[$node->nid] = array(
-      'title' => $node->node_title,
-      'rendered' => check_plain($node->node_title),
-    );
-  }
-  $matches = array();
-  foreach ($references as $id => $row) {
-    // Add a class wrapper for a few required CSS overrides.
-    $matches[$row['title'] ." [nid:$id]"] = '<div class="reference-autocomplete">'. $row['rendered'] . '</div>';
-  }
-  drupal_json($matches);
-}
-
-
-/**
  * Implementation of hook_perm().
  */
 function bulk_pdf_perm() {
@@ -62,7 +40,40 @@ function bulk_pdf_perm() {
 }
 
 /**
- * Implementation of hook_action_info()
+ * Implementation of hook_form_alter().
+ * Choosing model content-types.
+ */
+function bulk_pdf_form_alter(&$form, $form_state, $form_id) {
+  if ($form_id == 'node_type_form' && isset($form['identity']['type'])) {
+    $form['bulk_pdf'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Bulk PDF'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    );
+    $form['bulk_pdf']['bulk_pdf_model'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Bulk PDF model node'),
+      '#description' => t('Check if you want to use this content type for as a model for bulk PDFs.'),
+      '#default_value' => variable_get('bulk_pdf_model_' . $form['#node_type']->type, FALSE),
+      '#weight' => -15,
+    );
+  }
+  elseif (isset($form['type']) && isset($form['#node']) && $form['type']['#value'] .'_node_form' == $form_id && variable_get('bulk_pdf_model_' . $form['type']['#value'], FALSE)) {
+    $form['bulk_pdf'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Bulk PDF model tokens'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+    );
+    $form['bulk_pdf']['tokens'] = array(
+      '#value' => theme('token_tree', 'all', TRUE, FALSE),
+    );
+  }
+}
+
+/**
+ * Implementation of hook_action_info().
  */
 function bulk_pdf_action_info() {
   return array(
@@ -76,8 +87,41 @@ function bulk_pdf_action_info() {
 }
 
 /**
+ * Own autocomplete function for fetching titles only from one, selected content-type.
+ * The content-type is specified in a non-user configurable variable.
+ */
+function bulk_pdf_autocomplete($string = '') {
+  $matches = array();
+  $types = array_keys(node_get_types());
+  $enabled_types = array();
+  foreach ($types as $type) {
+    if (variable_get('bulk_pdf_model_' . $type, FALSE)) {
+      $enabled_types[] = $type;
+    }
+  }
+  if (!empty($enabled_types)) {
+    $placeholders = db_placeholders($enabled_types, 'varchar');
+    $q_args = $enabled_types;
+    $q_args[] = $string;
+    $result = db_query("SELECT n.nid, n.title AS node_title FROM {node} n WHERE type IN (" . $placeholders . ")  AND title LIKE '%%%s%%'", $q_args);
+    $references = array();
+    while ($node = db_fetch_object($result)) {
+      $references[$node->nid] = array(
+        'title' => $node->node_title,
+        'rendered' => check_plain($node->node_title),
+      );
+    }
+    foreach ($references as $id => $row) {
+      // Add a class wrapper for a few required CSS overrides.
+      $matches[$row['title'] ." [nid:$id]"] = '<div class="reference-autocomplete">'. $row['rendered'] . '</div>';
+    }
+  }
+  drupal_json($matches);
+}
+
+/**
  * Action callback
- * @see bulk_pdf_action_info().
+ * @see bulk_pdf_action_info()
  * Stores the node IDs and hijack the page after the operation is finished.
  * VBO is just the selection tool.
  */
@@ -87,12 +131,13 @@ function bulk_pdf_action($object, $context) {
   if ($msg == FALSE) {
     $msg = TRUE;
     // No better way to hijack page after views_bulk_operations finished, no _after hook or something like that to be able to use drupal_goto, also $context does not store information about the last object, object counter
-    drupal_set_message('<script type="text/javascript">window.location="'. url('bulk-pdf/generate') . '";</script>');
+    drupal_set_message(t('Please wait.!code', array('!code' => '<script type="text/javascript">window.location="'. url('bulk-pdf/generate') . '";</script>')));
   }
 }
 
 /**
- * Settings form for the action, @see bulk_pdf_action_info().
+ * Settings form for the action
+ * @see bulk_pdf_action_info()
  */
 function bulk_pdf_action_form($context) {
   $form = array();
@@ -115,9 +160,17 @@ function bulk_pdf_action_validate($form, &$form_state) {
     if (!empty($title) && ($n = node_load($nid)) && trim($title) != trim($n->title)) {
       form_set_error('model', t('Invalid model choice'));
     }
-    $_SESSION['bulk_pdf']['model'] = $nid;
-    $_SESSION['bulk_pdf']['back'] = $_GET['q'];
+    else {
+      $_SESSION['bulk_pdf']['model'] = $nid;
+      $_SESSION['bulk_pdf']['back'] = $_GET['q'];
+    }
   }
+}
+
+/**
+ * Submit handler for the action settings, unused.
+ */
+function bulk_pdf_action_submit($form, &$form_state) {
 }
 
 /**
@@ -134,12 +187,14 @@ function bulk_pdf_generate() {
   );
   $idx = 0;
   $nids = array();
-  foreach ($_SESSION['bulk_pdf']['nids'] as $nid) {
-    $nids[] = $nid;
-    $counter++;
-    if (count($nids) > ($batch_size - 1)) {
-      $batch['operations'][$idx++] = array('bulk_pdf_generate_process', array($nids));
-      $nids = array();
+  if (isset($_SESSION['bulk_pdf']['nids'])) {
+    foreach ($_SESSION['bulk_pdf']['nids'] as $nid) {
+      $nids[] = $nid;
+      $counter++;
+      if (count($nids) > ($batch_size - 1)) {
+        $batch['operations'][$idx++] = array('bulk_pdf_generate_process', array($nids));
+        $nids = array();
+      }
     }
   }
   if (!empty($nids)) {
